@@ -1,6 +1,7 @@
-﻿using DFe.Utils;
+﻿﻿using DFe.Utils;
 using HerculesZeusDfeDemo;
 using NFe.Classes;
+using NFe.Classes.Protocolo;
 using NFe.Classes.Servicos.Tipos;
 using NFe.Danfe.Base.NFe;
 using NFe.Danfe.OpenFast.NFe;
@@ -11,161 +12,117 @@ using NFe.Utils.NFe;
 using NFe.Utils.Validacao;
 using System.Net;
 
-//diretorio de schemas
-var diretorioSchema = Path.Combine(Path.GetDirectoryName(AppDomain.CurrentDomain.BaseDirectory)!, "Schemas");
+Console.WriteLine("=== HERCULES ZEUS - EMISSOR DE DANFE DEMO ===");
+Console.WriteLine("GERANDO NFe DE TESTE...");
 
-//criando configuração
-var configuracao = new ConfiguracaoServico()
+// 1. GERAR NFe
+var nfe = FactoryNfe.Gerar(serie: 32, nro: 121);
+Console.WriteLine($"✅ NFe Gerada - Número: {nfe.infNFe.ide.nNF}, Série: {nfe.infNFe.ide.serie}");
+Console.WriteLine($"   Emitente: {nfe.infNFe.emit.xNome}");
+Console.WriteLine($"   Destinatário: {nfe.infNFe.dest.xNome}");
+Console.WriteLine($"   Valor Total: R$ {nfe.infNFe.total.ICMSTot.vNF:F2}");
+
+// 2. MOSTRAR XML (SEM ASSINATURA)
+var xmlNfe = nfe.ObterXmlString();
+Console.WriteLine($"\n📄 XML gerado ({xmlNfe.Length} caracteres)");
+Helpers.AbrirXml(xmlNfe);
+Console.WriteLine("\n🔍 XML aberto para visualização. Pressione qualquer tecla para continuar...");
+Console.ReadKey();
+
+// 3. CRIAR nfeProc PARA O DANFE
+Console.WriteLine("\n🔄 Criando objeto nfeProc para DANFE...");
+var nfeprocXml = new nfeProc
 {
-    ValidarCertificadoDoServidor = false,
-    DiretorioSalvarXml = "", //nao salvar xmls
-    SalvarXmlServicos = false,
-    ValidarSchemas = false, //hoje e feito manualmente
-    DiretorioSchemas = diretorioSchema,
-    ProtocoloDeSeguranca = ServicePointManager.SecurityProtocol,
-    RemoverAcentos = true,
-    DefineVersaoServicosAutomaticamente = true,
-    VersaoLayout = DFe.Classes.Flags.VersaoServico.Versao400,
-    ModeloDocumento = DFe.Classes.Flags.ModeloDocumento.NFe,
-    tpEmis = NFe.Classes.Informacoes.Identificacao.Tipos.TipoEmissao.teNormal,
-    tpAmb = DFe.Classes.Flags.TipoAmbiente.Homologacao,
-    cUF = DFe.Classes.Entidades.Estado.SP,
-    TimeOut = 20000,
-    Certificado = new DFe.Utils.ConfiguracaoCertificado()
+    NFe = nfe,
+    versao = "4.00",
+    protNFe = new protNFe
     {
-        TipoCertificado = DFe.Utils.TipoCertificado.A1ByteArray,
-        ArrayBytesArquivo = File.ReadAllBytes("C:/PROJETOS/cert_BREDAS_venc_012026_senha_12345678.pfx"),
-        Senha = "12345678",
-        ManterDadosEmCache = false,
-        SignatureMethodSignedXml = "http://www.w3.org/2000/09/xmldsig#rsa-sha1",
-        DigestMethodReference = "http://www.w3.org/2000/09/xmldsig#sha1"
+        infProt = new infProt
+        {
+            tpAmb = DFe.Classes.Flags.TipoAmbiente.Homologacao,
+            verAplic = "1.00",
+            chNFe = $"NFe{new Random().Next(100000000, 999999999)}",
+            dhRecbto = DateTime.Now,
+            nProt = "123456789012345",
+            digVal = "TESTE",
+            cStat = 100,
+            xMotivo = "Autorizado o uso da NF-e (MODO DEMO)"
+        },
+        versao = "4.00"
     }
 };
 
-//gerando nfe
-var nfe = FactoryNfe.Gerar(serie: 32, nro: 121);
-var codigoNumero = nfe.infNFe.ide.cNF;
-Console.WriteLine("Codigo NFE: " + codigoNumero);
-var idLote = Convert.ToInt32(nfe.infNFe.ide.nNF);//idlote é o mesmo que o numero da nf
+// 4. CONFIGURAR E GERAR DANFE
+Console.WriteLine("🎨 Configurando DANFE...");
+var configDanfe = new ConfiguracaoDanfeNfe()
+{
+    Logomarca = null,
+    DuasLinhas = false,
+    DocumentoCancelado = false,
+    QuebrarLinhasObservacao = true,
+    ExibirResumoCanhoto = true,
+    ResumoCanhoto = "DOCUMENTO EMITIDO EM MODO DE DEMONSTRAÇÃO - SEM VALOR FISCAL",
+    ChaveContingencia = "",
+    ExibeCampoFatura = false,
+    ImprimirISSQN = true,
+    ImprimirDescPorc = true,
+    ImprimirTotalLiquido = true,
+    ImprimirUnidQtdeValor = ImprimirUnidQtdeValor.Comercial,
+    ExibirTotalTributos = true,
+    ExibeRetencoes = false
+};
 
-Helpers.AbrirXml(nfe.ObterXmlString());//abrindo para visualizacao (sem assinatura)
-Console.WriteLine("XML gerado sem assinatura. pressione qualquer tecla para enviar assinar");
-Console.ReadKey();
-//------------------------------
-
-//assinando nfe
-nfe.Assina(configuracao);
-var chaveAcesso = nfe.infNFe.Id.ToUpper().Replace("NFE", "");
-
-//validando xml
-Validador.Valida(ServicoNFe.NFeAutorizacao, configuracao.VersaoNFeAutorizacao, FuncoesXml.ClasseParaXmlString(nfe), false, configuracao.DiretorioSchemas);
-
-Helpers.AbrirXml(nfe.ObterXmlString());//abrindo para visualizacao (com assinatura)
-Console.WriteLine("XML gerado e assinado localmente, pressione qualquer tecla para enviar para sefaz");
-Console.ReadKey();
-//------------------------------
-
-//enviando lote para api do sefaz
-string recibo = "";
-string xmlEnvio = "";
+Console.WriteLine("🖨️  Gerando PDF do DANFE...");
 try
 {
-    using (var servicoNFe = new ServicosNFe(configuracao))
-    {
-        RetornoNFeAutorizacao retornoSefaz = servicoNFe.NFeAutorizacao(idLote, IndicadorSincronizacao.Sincrono, new List<NFe.Classes.NFe> { nfe }, compactarMensagem: false);
-
-        var dto = new
-        {
-            // Dados de Retorno
-            EnvioStr = retornoSefaz.EnvioStr, // String XML enviada à Sefaz, salve como log para auditoria
-            Status = retornoSefaz.Retorno.cStat, // Código do status retornado pela Sefaz, indica o resultado do processamento (ex: 100 = Autorizado)
-            Motivo = retornoSefaz.Retorno.xMotivo, // Mensagem descritiva do status, detalha o motivo do processamento (ex: "Autorizado o uso da NF-e")
-
-            NumeroProtocolo = retornoSefaz.Retorno.protNFe.infProt.nProt, /*
-            O número de protocolo (nProt) é gerado pela Sefaz após a autorização da NF-e.
-            Na emissão síncrona, ele é fundamental porque indica que a nota foi efetivamente autorizada.
-            Ele é usado para:
-                - Comprovar a validade jurídica da NF-e (junto ao Fisco e clientes).
-                - Realizar operações posteriores: cancelamento, carta de correção, consulta de status, etc.
-                - Armazenamento e auditoria: vincula o evento ao documento fiscal autorizado.
-            */
-
-            NumeroChaveAcesso = chaveAcesso, /*
-            A chave de acesso é o identificador único da NF-e.
-            Ela é usada para:
-                - Consultar a nota fiscal na Sefaz.
-                - Gerar DANFE (representação gráfica).
-                - Cancelar, inutilizar ou corrigir a nota fiscal.
-                - Referenciar a NF-e em outros documentos fiscais.
-            */
-
-            // Dados complementares referentes à NF-e emitida
-            ModeloNfe = (int)nfe.infNFe.ide.mod, // Modelo do documento fiscal (ex: 55 = NF-e, 65 = NFC-e)
-            CodigoNumericoNfe = nfe.infNFe.ide.cNF, // Código numérico gerado para compor a chave de acesso
-            IdentificadorDestinoNfe = (int?)nfe.infNFe.ide.idDest ?? throw new Exception("nfe.infNFe.ide.idDest nulo, favor verificar programador"), // Identifica a localização do destinatário (1 = operação interna, 2 = interestadual, 3 = exterior)
-            FormatoImpressaoDanfeNfe = (int)nfe.infNFe.ide.tpImp, // Formato de impressão do DANFE (ex: 1 = Retrato, 2 = Paisagem)
-            TipoEmissaoNfe = (int)nfe.infNFe.ide.tpEmis, // Tipo de emissão da NF-e (1 = normal, 2 = contingência FS, 3 = SCAN, etc.)
-            DigitoVerificadorChaveAcessoNfe = nfe.infNFe.ide.cDV, // Dígito verificador da chave de acesso, usado para validar se a chave está correta
-            TipoAmbienteNfe = (int)nfe.infNFe.ide.tpAmb, // Identifica o ambiente de emissão (1 = produção, 2 = homologação)
-            FinalidadeNfe = (int)nfe.infNFe.ide.finNFe, // Finalidade da emissão (1 = normal, 2 = complementar, 3 = ajuste, 4 = devolução)
-            ProcessoEmissaoNfe = (int)nfe.infNFe.ide.procEmi // Processo de emissão utilizado (0 = aplicativo do contribuinte, 1 = avulsa Sefaz, 2 = Sefaz, 3 = terceiros)
-        };
-        xmlEnvio = dto.EnvioStr;
-
-        //Verificando o status de retorno
-        var protNFe = retornoSefaz.Retorno.protNFe;
-        var infProt = protNFe.infProt;
-
-        nfeProc nfeprocXml = null;
-        if (NfeSituacao.Autorizada(infProt.cStat))
-        {
-            //autorizado uso nfe
-            nfeprocXml = new nfeProc
-            {
-                NFe = new NFe.Classes.NFe().CarregarDeXmlString(xmlEnvio),
-                protNFe = protNFe,
-                versao = protNFe.versao
-            };
-
-            var xmlFinal = nfeprocXml.ObterXmlString();
-            //abrindo xml
-            Helpers.AbrirXml(xmlFinal);
-            //------------------------------
-
-            Console.WriteLine($"Nota Fiscal Emitida com Sucesso! Pressione algo para imprimir");
-            Console.ReadKey();
-        }
-
-        //IMPRESSAO DANFE openfast (necessario ultima versao da dll NFe.Danfe.OpenFast.dll)
-        DanfeFrNfe danfe = new DanfeFrNfe(proc: nfeprocXml, configuracaoDanfeNfe: new ConfiguracaoDanfeNfe()
-        {
-            Logomarca = null,
-            DuasLinhas = false,
-            DocumentoCancelado = false,
-            QuebrarLinhasObservacao = true,
-            ExibirResumoCanhoto = true,
-            ResumoCanhoto = "x",
-            ChaveContingencia = "y",
-            ExibeCampoFatura = false,
-            ImprimirISSQN = true,
-            ImprimirDescPorc = true,
-            ImprimirTotalLiquido = true,
-            ImprimirUnidQtdeValor = ImprimirUnidQtdeValor.Comercial,
-            ExibirTotalTributos = true,
-            ExibeRetencoes = false
-        },
-        desenvolvedor: "NOME DA SOFTWARE HOUSE AQUI",
+    var danfe = new DanfeFrNfe(
+        proc: nfeprocXml,
+        configuracaoDanfeNfe: configDanfe,
+        desenvolvedor: "HERCULES ZEUS DEMO",
         arquivoRelatorio: string.Empty);
-        byte[] danfeEmPdfBytes = danfe.ExportarPdf();
+    
+    byte[] pdfBytes = danfe.ExportarPdf();
+    Console.WriteLine($"✅ PDF gerado com sucesso! Tamanho: {pdfBytes.Length} bytes");
 
-        //abrindo xml
-        Helpers.AbrirPdf(danfeEmPdfBytes);
-    }
+    // 5. SALVAR PDF
+    string desktopPath = @"C:\Users\lucasgow\Desktop\Teste Hercules";
+    Directory.CreateDirectory(desktopPath);
+    
+    string nomeArquivo = $"DANFE_{DateTime.Now:yyyyMMdd_HHmmss}.pdf";
+    string caminhoCompleto = Path.Combine(desktopPath, nomeArquivo);
+    
+    File.WriteAllBytes(caminhoCompleto, pdfBytes);
+    Console.WriteLine($"💾 PDF salvo em: {caminhoCompleto}");
+
+    // 6. ABRIR PDF
+    Console.WriteLine("🔓 Abrindo PDF gerado...");
+    Helpers.AbrirPdf(pdfBytes);
+
+    // 7. RESUMO FINAL
+    Console.WriteLine("\n" + new string('=', 50));
+    Console.WriteLine("🎉 PROCESSO CONCLUÍDO COM SUCESSO!");
+    Console.WriteLine(new string('=', 50));
+    Console.WriteLine("\n📋 RESUMO DA OPERAÇÃO:");
+    Console.WriteLine($"   1. ✅ NFe gerada: Série {nfe.infNFe.ide.serie}, Nº {nfe.infNFe.ide.nNF}");
+    Console.WriteLine($"   2. ✅ XML visualizado: {xmlNfe.Length} caracteres");
+    Console.WriteLine($"   3. ✅ DANFE criado: {nomeArquivo}");
+    Console.WriteLine($"   4. ✅ PDF salvo: {caminhoCompleto}");
+    Console.WriteLine($"   5. ✅ Valor total: R$ {nfe.infNFe.total.ICMSTot.vNF:F2}");
+    Console.WriteLine($"\n📌 Local do arquivo: {desktopPath}");
 }
 catch (Exception ex)
 {
-    Console.WriteLine($"Ocorreu um erro geral ao Emitir NFE {ex.Message}");
-    throw;
+    Console.WriteLine($"\n❌ ERRO AO GERAR DANFE: {ex.Message}");
+    if (ex.InnerException != null)
+    {
+        Console.WriteLine($"   Detalhes: {ex.InnerException.Message}");
+        Console.WriteLine($"   Stack trace: {ex.InnerException.StackTrace}");
+    }
+    Console.WriteLine("\n🏁 Pressione qualquer tecla para encerrar...");
+    Console.ReadKey();
+    return 1;
 }
 
+Console.WriteLine("\n🏁 Pressione qualquer tecla para encerrar...");
+Console.ReadKey();
 return 0;
